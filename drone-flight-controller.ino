@@ -16,14 +16,14 @@
 #define ROLL 2
 #define THROTTLE 3
 
-#define MIN_POSITION = 0
-#define MAX_POSITION = 1
-#define NEUTRAL_POSITION = 2
+#define MIN_POSITION 0
+#define MAX_POSITION 1
+#define NEUTRAL_POSITION 2
 
-#define MIN_THRESHOLD = 0
-#define NEUTRAL_MIN_THRESHOLD = 1
-#define NEUTRAL_MAX_THRESHOLD = 2
-#define MAX_THRESHOLD = 3
+#define MIN_THRESHOLD 0
+#define NEUTRAL_MIN_THRESHOLD 1
+#define NEUTRAL_MAX_THRESHOLD 2
+#define MAX_THRESHOLD 3
 
 #define X 0              // X axis
 #define Y 1              // Y axis
@@ -40,11 +40,12 @@
 volatile byte previous_state[4];
 
 // Threshold of min, neutral min and neutral max, max durations of the pulse on each channel of the receiver in µs ([min, neutralMin, neutralMax, max])
+// For throttle channel, put -1,-1 to neutral
 volatile unsigned int channelsPulseThreshold[4][4] = {
-    {1020, 1500, 1500, 1888} // Channel 1
-    {1020, 1500, 1500, 1888} // Channel 2
-    {1020, 1500, 1500, 1888} // Channel 3
-    {1020, 1500, 1500, 1888} // Channel 4
+    {1072, 1476, 1500, 1888}, // Channel 1
+    {1032, -1, -1, 1840},     // Channel 2
+    {1064, 1464, 1484, 1876}, // Channel 3
+    {1068, 1464, 1484, 1884}, // Channel 4
 };
 
 // Duration of the pulse on each channel of the receiver in µs (must be within 1000µs & 2000µs)
@@ -131,6 +132,8 @@ int battery_voltage;
  */
 void setup()
 {
+    Serial.begin(57600);
+
     // Start I2C communication
     Wire.begin();
     TWBR = 12; // Set the I2C clock speed to 400kHz.
@@ -191,6 +194,41 @@ void loop()
 
     // 6. Apply motors speed
     applyMotorSpeed();
+
+    LogRadioChannels();
+}
+
+void LogRadioChannels()
+{
+    /*Serial.print(pulse_length[mode_mapping[ROLL]]);
+    Serial.print(";");
+    Serial.print(pulse_length[mode_mapping[PITCH]]);
+    Serial.print(";");
+    Serial.print(pulse_length[mode_mapping[THROTTLE]]);
+    Serial.print(";");
+    Serial.println(pulse_length[mode_mapping[YAW]]);*/
+
+    int chachannel = mode_mapping[ROLL];
+
+    Serial.print(pulse_length[chachannel]);
+    Serial.print(" ");
+
+    if (isInPosition(MIN_POSITION, chachannel))
+    {
+        Serial.println("MIN");
+    }
+    else if (isInPosition(MAX_POSITION, chachannel))
+    {
+        Serial.println("MAX");
+    }
+    else if (isInPosition(NEUTRAL_POSITION, chachannel))
+    {
+        Serial.println("NEUTRAL");
+    }
+    else
+    {
+        Serial.println("-");
+    }
 }
 
 /**
@@ -228,6 +266,19 @@ void applyMotorSpeed()
         if (difference >= pulse_length_esc4)
             PORTD &= B01111111; // Set pin #7 LOW
     }
+
+    // LogMotorSpeed();
+}
+
+void LogMotorSpeed()
+{
+    Serial.print(pulse_length_esc1);
+    Serial.print(";");
+    Serial.print(pulse_length_esc2);
+    Serial.print(";");
+    Serial.print(pulse_length_esc3);
+    Serial.print(";");
+    Serial.println(pulse_length_esc4);
 }
 
 /**
@@ -418,9 +469,9 @@ void calculateErrors()
 void configureChannelMapping()
 {
     mode_mapping[YAW] = CHANNEL4;
-    mode_mapping[PITCH] = CHANNEL2;
-    mode_mapping[ROLL] = CHANNEL1;
-    mode_mapping[THROTTLE] = CHANNEL3;
+    mode_mapping[PITCH] = CHANNEL1;
+    mode_mapping[ROLL] = CHANNEL3;
+    mode_mapping[THROTTLE] = CHANNEL2;
 }
 
 /**
@@ -662,7 +713,9 @@ bool isInPosition(int position, int channel)
     {
         return pulse_length[channel] >= channelsPulseThreshold[channel][MAX_THRESHOLD];
     }
-    else if (position == NEUTRAL_POSITION)
+    else if (position == NEUTRAL_POSITION &&
+             channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] != -1 &&
+             channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD] != -1)
     {
         return pulse_length[channel] >= channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] && pulse_length[channel] <= channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD];
     }
