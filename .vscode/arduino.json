@@ -1,0 +1,5 @@
+{
+    "board": "arduino:avr:uno",
+    "sketch": "drone-flight-controller.ino",
+    "port": "/dev/ttyACM0"
+}
