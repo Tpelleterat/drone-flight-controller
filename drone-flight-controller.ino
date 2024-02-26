@@ -40,10 +40,10 @@
 volatile byte previous_state[4];
 
 // Threshold of min, neutral min and neutral max, max durations of the pulse on each channel of the receiver in µs ([min, neutralMin, neutralMax, max])
-// For throttle channel, put -1,-1 to neutral
-volatile unsigned int channelsPulseThreshold[4][4] = {
+// For throttle channel, put 0,0 to neutral
+unsigned int channelsPulseThreshold[4][4] = {
     {1072, 1476, 1500, 1888}, // Channel 1
-    {1032, -1, -1, 1840},     // Channel 2
+    {1032, 0, 0, 1840},       // Channel 2
     {1064, 1464, 1484, 1876}, // Channel 3
     {1068, 1464, 1484, 1884}, // Channel 4
 };
@@ -103,7 +103,12 @@ unsigned long pulse_length_esc1 = 1000,
               pulse_length_esc4 = 1000;
 
 // ------------- Global variables used for PID controller --------------------
+
+// Min throttle pulse offset to set yaw
+int YAW_MIN_THROTTLE_OFFSET = 38;
+
 float pid_set_points[3] = {0, 0, 0}; // Yaw, Pitch, Roll
+
 // Errors
 float errors[3];                     // Measured errors (compared to instructions) : [Yaw, Pitch, Roll]
 float delta_err[3] = {0, 0, 0};      // Error deltas in that order   : Yaw, Pitch, Roll
@@ -195,10 +200,13 @@ void loop()
     // 6. Apply motors speed
     applyMotorSpeed();
 
-    LogRadioChannels();
+    // DebugLogRadioChannels();
+    // DebugLogMotorSpeed();
+    DebugSetPoint();
+    // DebugMeasure();
 }
 
-void LogRadioChannels()
+void DebugLogRadioChannels()
 {
     /*Serial.print(pulse_length[mode_mapping[ROLL]]);
     Serial.print(";");
@@ -229,6 +237,32 @@ void LogRadioChannels()
     {
         Serial.println("-");
     }
+}
+
+void DebugLogMotorSpeed()
+{
+    Serial.print(pulse_length_esc1);
+    Serial.print(";");
+    Serial.print(pulse_length_esc2);
+    Serial.print(";");
+    Serial.print(pulse_length_esc3);
+    Serial.print(";");
+    Serial.println(pulse_length_esc4);
+}
+
+void DebugSetPoint(){
+  
+    Serial.print(pid_set_points[ROLL]);
+    Serial.print(";");
+    Serial.print(pid_set_points[PITCH]);
+    Serial.print(";");
+    Serial.println(pid_set_points[YAW]);
+}
+
+void DebugMeasure(){
+    Serial.print(measures[ROLL]);
+    Serial.print(";");
+    Serial.println(measures[PITCH]);
 }
 
 /**
@@ -266,19 +300,6 @@ void applyMotorSpeed()
         if (difference >= pulse_length_esc4)
             PORTD &= B01111111; // Set pin #7 LOW
     }
-
-    // LogMotorSpeed();
-}
-
-void LogMotorSpeed()
-{
-    Serial.print(pulse_length_esc1);
-    Serial.print(";");
-    Serial.print(pulse_length_esc2);
-    Serial.print(";");
-    Serial.print(pulse_length_esc3);
-    Serial.print(";");
-    Serial.println(pulse_length_esc4);
 }
 
 /**
@@ -647,8 +668,8 @@ void resetPidController()
 void calculateSetPoints()
 {
     pid_set_points[YAW] = calculateYawSetPoint(pulse_length[mode_mapping[YAW]], pulse_length[mode_mapping[THROTTLE]]);
-    pid_set_points[PITCH] = calculateSetPoint(measures[PITCH], pulse_length[mode_mapping[PITCH]]);
-    pid_set_points[ROLL] = calculateSetPoint(measures[ROLL], pulse_length[mode_mapping[ROLL]]);
+    pid_set_points[PITCH] = calculateSetPoint(measures[PITCH], pulse_length[mode_mapping[PITCH]], mode_mapping[PITCH]);
+    pid_set_points[ROLL] = calculateSetPoint(measures[ROLL], pulse_length[mode_mapping[ROLL]], mode_mapping[ROLL]);
 }
 
 /**
@@ -658,19 +679,19 @@ void calculateSetPoints()
  * @param int   channel_pulse Pulse length of the corresponding receiver channel
  * @return float
  */
-float calculateSetPoint(float angle, int channel_pulse)
+float calculateSetPoint(float angle, int channel_pulse, int channel)
 {
     float level_adjust = angle * 15; // Value 15 limits maximum angle value to ±32.8°
     float set_point = 0;
 
     // Need a dead band of 16µs for better result
-    if (channel_pulse > 1508)
+    if (channel_pulse > channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD])
     {
-        set_point = channel_pulse - 1508;
+        set_point = channel_pulse - channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD];
     }
-    else if (channel_pulse < 1492)
+    else if (channel_pulse < channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD])
     {
-        set_point = channel_pulse - 1492;
+        set_point = channel_pulse - channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD];
     }
 
     set_point -= level_adjust;
@@ -691,10 +712,11 @@ float calculateYawSetPoint(int yaw_pulse, int throttle_pulse)
     float set_point = 0;
 
     // Do not yaw when turning off the motors
-    if (throttle_pulse > 1050)
+
+    if (throttle_pulse > channelsPulseThreshold[mode_mapping[THROTTLE]][MIN_THRESHOLD] + YAW_MIN_THROTTLE_OFFSET)
     {
         // There is no notion of angle on this axis as the quadcopter can turn on itself
-        set_point = calculateSetPoint(0, yaw_pulse);
+        set_point = calculateSetPoint(0, yaw_pulse, mode_mapping[YAW]);
     }
 
     return set_point;
@@ -714,8 +736,8 @@ bool isInPosition(int position, int channel)
         return pulse_length[channel] >= channelsPulseThreshold[channel][MAX_THRESHOLD];
     }
     else if (position == NEUTRAL_POSITION &&
-             channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] != -1 &&
-             channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD] != -1)
+             channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] != 0 &&
+             channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD] != 0)
     {
         return pulse_length[channel] >= channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] && pulse_length[channel] <= channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD];
     }
