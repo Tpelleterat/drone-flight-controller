@@ -200,42 +200,61 @@ void loop()
     // 6. Apply motors speed
     applyMotorSpeed();
 
+    DebugLogs();
+}
+
+void DebugLogs()
+{
+
     // DebugLogRadioChannels();
-    // DebugLogMotorSpeed();
-    DebugSetPoint();
-    // DebugMeasure();
+    DebugLogMotorSpeed();
+    // DebugSetPoint();
+    DebugMeasure();
+
+    Serial.println();
 }
 
 void DebugLogRadioChannels()
 {
-    /*Serial.print(pulse_length[mode_mapping[ROLL]]);
+    Serial.print(pulse_length[mode_mapping[ROLL]]);
+    Serial.print(" ");
+    DebugLogPosition(mode_mapping[ROLL]);
+
     Serial.print(";");
     Serial.print(pulse_length[mode_mapping[PITCH]]);
+    Serial.print(" ");
+    DebugLogPosition(mode_mapping[PITCH]);
+
     Serial.print(";");
     Serial.print(pulse_length[mode_mapping[THROTTLE]]);
-    Serial.print(";");
-    Serial.println(pulse_length[mode_mapping[YAW]]);*/
-
-    int chachannel = mode_mapping[ROLL];
-
-    Serial.print(pulse_length[chachannel]);
     Serial.print(" ");
+    DebugLogPosition(mode_mapping[THROTTLE]);
 
-    if (isInPosition(MIN_POSITION, chachannel))
+    Serial.print(";");
+    Serial.print(pulse_length[mode_mapping[YAW]]);
+    Serial.print(" ");
+    DebugLogPosition(mode_mapping[YAW]);
+
+    Serial.print(" | ");
+}
+
+void DebugLogPosition(int channel)
+{
+    if (isInPosition(MIN_POSITION, channel))
     {
-        Serial.println("MIN");
+        Serial.print("I");
     }
-    else if (isInPosition(MAX_POSITION, chachannel))
+    else if (isInPosition(MAX_POSITION, channel))
     {
-        Serial.println("MAX");
+        Serial.print("A");
     }
-    else if (isInPosition(NEUTRAL_POSITION, chachannel))
+    else if (isInPosition(NEUTRAL_POSITION, channel))
     {
-        Serial.println("NEUTRAL");
+        Serial.print("N");
     }
     else
     {
-        Serial.println("-");
+        Serial.print("-");
     }
 }
 
@@ -247,22 +266,29 @@ void DebugLogMotorSpeed()
     Serial.print(";");
     Serial.print(pulse_length_esc3);
     Serial.print(";");
-    Serial.println(pulse_length_esc4);
+    Serial.print(pulse_length_esc4);
+
+    Serial.print(" | ");
 }
 
-void DebugSetPoint(){
-  
+void DebugSetPoint()
+{
     Serial.print(pid_set_points[ROLL]);
     Serial.print(";");
     Serial.print(pid_set_points[PITCH]);
     Serial.print(";");
-    Serial.println(pid_set_points[YAW]);
+    Serial.print(pid_set_points[YAW]);
+
+    Serial.print(" | ");
 }
 
-void DebugMeasure(){
+void DebugMeasure()
+{
     Serial.print(measures[ROLL]);
     Serial.print(";");
-    Serial.println(measures[PITCH]);
+    Serial.print(measures[PITCH]);
+
+    Serial.print(" | ");
 }
 
 /**
@@ -426,7 +452,7 @@ void pidController()
     pulse_length_esc4 = throttle;
 
     // Do not calculate anything if throttle is 0
-    if (throttle >= 1012)
+    if (!isInPosition(MIN_POSITION, mode_mapping[THROTTLE]))
     {
         // PID = e.Kp + ∫e.Ki + Δe.Kd
         yaw_pid = (errors[YAW] * Kp[YAW]) + (error_sum[YAW] * Ki[YAW]) + (delta_err[YAW] * Kd[YAW]);
