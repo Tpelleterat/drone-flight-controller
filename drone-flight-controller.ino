@@ -10,6 +10,7 @@
 #define CHANNEL2 1
 #define CHANNEL3 2
 #define CHANNEL4 3
+#define PIN_CHANNEL_SWITCH 3
 
 #define YAW 0
 #define PITCH 1
@@ -42,10 +43,10 @@ volatile byte previous_state[4];
 // Threshold of min, neutral min and neutral max, max durations of the pulse on each channel of the receiver in µs ([min, neutralMin, neutralMax, max])
 // For throttle channel, put 0,0 to neutral
 unsigned int channelsPulseThreshold[4][4] = {
-    {1072, 1476, 1500, 1888}, // Channel 1
-    {1032, 0, 0, 1840},       // Channel 2
-    {1064, 1464, 1484, 1876}, // Channel 3
-    {1068, 1464, 1484, 1884}, // Channel 4
+    {1068, 1464, 1488, 1880}, // Channel 1
+    {1068, 0, 0, 1840},       // Channel 2
+    {1068, 1464, 1488, 1880}, // Channel 3
+    {1068, 1464, 1488, 1880}, // Channel 4
 };
 
 // Duration of the pulse on each channel of the receiver in µs (must be within 1000µs & 2000µs)
@@ -155,6 +156,8 @@ void setup()
     calibrateMpu6050();
 
     configureChannelMapping();
+    // Configure channel switch
+    pinMode(PIN_CHANNEL_SWITCH, INPUT);
 
     // Configure interrupts for receiver
     PCICR |= (1 << PCIE0);   // Set PCIE0 to enable PCMSK0 scan
@@ -206,7 +209,7 @@ void loop()
 void DebugLogs()
 {
 
-    // DebugLogRadioChannels();
+    DebugLogRadioChannels();
     DebugLogMotorSpeed();
     // DebugSetPoint();
     DebugMeasure();
@@ -234,6 +237,11 @@ void DebugLogRadioChannels()
     Serial.print(pulse_length[mode_mapping[YAW]]);
     Serial.print(" ");
     DebugLogPosition(mode_mapping[YAW]);
+
+    int ch = pulseIn(PIN_CHANNEL_SWITCH, HIGH, 30000);
+    Serial.print(";");
+    Serial.print(ch);
+    Serial.print(" ");
 
     Serial.print(" | ");
 }
@@ -452,7 +460,7 @@ void pidController()
     pulse_length_esc4 = throttle;
 
     // Do not calculate anything if throttle is 0
-    if (!isInPosition(MIN_POSITION, mode_mapping[THROTTLE]))
+    if (false && !isInPosition(MIN_POSITION, mode_mapping[THROTTLE]))
     {
         // PID = e.Kp + ∫e.Ki + Δe.Kd
         yaw_pid = (errors[YAW] * Kp[YAW]) + (error_sum[YAW] * Ki[YAW]) + (delta_err[YAW] * Kd[YAW]);
@@ -516,8 +524,8 @@ void calculateErrors()
 void configureChannelMapping()
 {
     mode_mapping[YAW] = CHANNEL4;
-    mode_mapping[PITCH] = CHANNEL1;
-    mode_mapping[ROLL] = CHANNEL3;
+    mode_mapping[PITCH] = CHANNEL3;
+    mode_mapping[ROLL] = CHANNEL1;
     mode_mapping[THROTTLE] = CHANNEL2;
 }
 
