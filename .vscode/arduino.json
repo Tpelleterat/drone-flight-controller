@@ -1,6 +1,5 @@
 {
     "board": "arduino:avr:uno",
     "sketch": "drone-flight-controller.ino",
-    "port": "/dev/ttyACM0",
-    "output": "./build"
+    "port": "/dev/ttyACM0"
 }
