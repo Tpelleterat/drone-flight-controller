@@ -6,11 +6,16 @@
 // ---------------------------------------------------------------------------
 #include <Wire.h>
 // ------------------- Define some constants for convenience -----------------
+#define DEBUG_LOG_RADIO 1
+#define DEBUG_LOG_MOTOR 0
+#define DEBUG_LOG_SET_POINT 0
+#define DEBUG_LOG_MEASURE 0
+
 #define CHANNEL1 0
 #define CHANNEL2 1
 #define CHANNEL3 2
 #define CHANNEL4 3
-#define PIN_CHANNEL_SWITCH 3
+#define PIN_EXTRA_CHANNEL 3
 
 #define YAW 0
 #define PITCH 1
@@ -51,6 +56,8 @@ unsigned int channelsPulseThreshold[4][4] = {
 
 // Duration of the pulse on each channel of the receiver in µs (must be within 1000µs & 2000µs)
 volatile unsigned int pulse_length[4] = {1500, 1500, 1000, 1500};
+// Duration of the pulse on extra channel (switch or other)
+unsigned int extra_channel_pulse_length = 0;
 
 // Used to calculate pulse duration on each channel
 volatile unsigned long current_time;
@@ -157,7 +164,7 @@ void setup()
 
     configureChannelMapping();
     // Configure channel switch
-    pinMode(PIN_CHANNEL_SWITCH, INPUT);
+    pinMode(PIN_EXTRA_CHANNEL, INPUT);
 
     // Configure interrupts for receiver
     PCICR |= (1 << PCIE0);   // Set PCIE0 to enable PCMSK0 scan
@@ -180,6 +187,9 @@ void setup()
  */
 void loop()
 {
+    // Optional. Read extra channel,
+    readExtraChannel();
+
     // 1. First, read raw values from MPU-6050
     readSensor();
 
@@ -203,100 +213,8 @@ void loop()
     // 6. Apply motors speed
     applyMotorSpeed();
 
-    DebugLogs();
-}
-
-void DebugLogs()
-{
-
-    DebugLogRadioChannels();
-    DebugLogMotorSpeed();
-    // DebugSetPoint();
-    DebugMeasure();
-
-    Serial.println();
-}
-
-void DebugLogRadioChannels()
-{
-    Serial.print(pulse_length[mode_mapping[ROLL]]);
-    Serial.print(" ");
-    DebugLogPosition(mode_mapping[ROLL]);
-
-    Serial.print(";");
-    Serial.print(pulse_length[mode_mapping[PITCH]]);
-    Serial.print(" ");
-    DebugLogPosition(mode_mapping[PITCH]);
-
-    Serial.print(";");
-    Serial.print(pulse_length[mode_mapping[THROTTLE]]);
-    Serial.print(" ");
-    DebugLogPosition(mode_mapping[THROTTLE]);
-
-    Serial.print(";");
-    Serial.print(pulse_length[mode_mapping[YAW]]);
-    Serial.print(" ");
-    DebugLogPosition(mode_mapping[YAW]);
-
-    int ch = pulseIn(PIN_CHANNEL_SWITCH, HIGH, 30000);
-    Serial.print(";");
-    Serial.print(ch);
-    Serial.print(" ");
-
-    Serial.print(" | ");
-}
-
-void DebugLogPosition(int channel)
-{
-    if (isInPosition(MIN_POSITION, channel))
-    {
-        Serial.print("I");
-    }
-    else if (isInPosition(MAX_POSITION, channel))
-    {
-        Serial.print("A");
-    }
-    else if (isInPosition(NEUTRAL_POSITION, channel))
-    {
-        Serial.print("N");
-    }
-    else
-    {
-        Serial.print("-");
-    }
-}
-
-void DebugLogMotorSpeed()
-{
-    Serial.print(pulse_length_esc1);
-    Serial.print(";");
-    Serial.print(pulse_length_esc2);
-    Serial.print(";");
-    Serial.print(pulse_length_esc3);
-    Serial.print(";");
-    Serial.print(pulse_length_esc4);
-
-    Serial.print(" | ");
-}
-
-void DebugSetPoint()
-{
-    Serial.print(pid_set_points[ROLL]);
-    Serial.print(";");
-    Serial.print(pid_set_points[PITCH]);
-    Serial.print(";");
-    Serial.print(pid_set_points[YAW]);
-
-    Serial.print(" | ");
-}
-
-void DebugMeasure()
-{
-    Serial.print(measures[ROLL]);
-    Serial.print(";");
-    Serial.print(measures[PITCH]);
-
-    Serial.print(" | ");
+    // Optional, show logs if activated
+    debugLogs();
 }
 
 /**
@@ -807,6 +725,43 @@ bool isBatteryConnected()
 }
 
 /**
+ * Feel extra_channel_pulse_length variable from channel PIN_EXTRA_CHANNEL.
+ * Not use interrupt to let available pin free for control channels
+ */
+void readExtraChannel()
+{
+    extra_channel_pulse_length = read_pulse(PIN_EXTRA_CHANNEL);
+}
+
+/*
+ * Non-blocking pulseIn(): returns the pulse length in microseconds
+ * when the falling edge is detected. Otherwise returns 0.
+ */
+unsigned long read_pulse(int pin)
+{
+    static unsigned long rising_time; // time of the rising edge
+    static int last_state;            // previous pin state
+    int state = digitalRead(pin);     // current pin state
+    unsigned long pulse_length = 0;   // default return value
+
+    // On rising edge: record current time.
+    if (last_state == LOW && state == HIGH)
+    {
+        rising_time = micros();
+    }
+
+    // On falling edge: report pulse length.
+    if (last_state == HIGH && state == LOW)
+    {
+        unsigned long falling_time = micros();
+        pulse_length = falling_time - rising_time;
+    }
+
+    last_state = state;
+    return pulse_length;
+}
+
+/**
  * This Interrupt Sub Routine is called each time input 8, 9, 10 or 11 changed state.
  * Read the receiver signals in order to get flight instructions.
  *
@@ -882,3 +837,126 @@ ISR(PCINT0_vect)
         pulse_length[CHANNEL4] = current_time - timer[CHANNEL4]; // Calculate pulse duration & save it
     }
 }
+
+void debugLogs()
+{
+
+#if DEBUG_LOG_RADIO == 1
+    debugLogRadioChannels();
+#endif
+
+#if DEBUG_LOG_MOTOR == 1
+    debugLogMotorSpeed();
+#endif
+
+#if DEBUG_LOG_SET_POINT == 1
+    debugSetPoint();
+#endif
+
+#if DEBUG_LOG_MEASURE == 1
+    debugMeasure();
+#endif
+
+#if DEBUG_LOG_RADIO == 1 || DEBUG_LOG_MOTOR == 1 || DEBUG_LOG_SET_POINT == 1 || DEBUG_LOG_MEASURE == 1
+    Serial.println();
+#endif
+}
+
+#if DEBUG_LOG_RADIO == 1
+/**
+ * Show logs of control with order: ROLL, PITCH, THROTTLE, YAW, EXTRA CHANNEL
+ */
+void debugLogRadioChannels()
+{
+    Serial.print(pulse_length[mode_mapping[ROLL]]);
+    Serial.print(" ");
+    debugLogPosition(mode_mapping[ROLL]);
+
+    Serial.print(";");
+    Serial.print(pulse_length[mode_mapping[PITCH]]);
+    Serial.print(" ");
+    debugLogPosition(mode_mapping[PITCH]);
+
+    Serial.print(";");
+    Serial.print(pulse_length[mode_mapping[THROTTLE]]);
+    Serial.print(" ");
+    debugLogPosition(mode_mapping[THROTTLE]);
+
+    Serial.print(";");
+    Serial.print(pulse_length[mode_mapping[YAW]]);
+    Serial.print(" ");
+    debugLogPosition(mode_mapping[YAW]);
+
+    int ch = pulseIn(PIN_EXTRA_CHANNEL, HIGH, 30000);
+    Serial.print(";");
+    Serial.print(ch);
+    Serial.print(" ");
+
+    Serial.print(" | ");
+
+    Serial.print(";");
+    Serial.print(extra_channel_pulse_length);
+    Serial.print(" ");
+
+    Serial.print(" | ");
+}
+
+void debugLogPosition(int channel)
+{
+    if (isInPosition(MIN_POSITION, channel))
+    {
+        Serial.print("I");
+    }
+    else if (isInPosition(MAX_POSITION, channel))
+    {
+        Serial.print("A");
+    }
+    else if (isInPosition(NEUTRAL_POSITION, channel))
+    {
+        Serial.print("N");
+    }
+    else
+    {
+        Serial.print("-");
+    }
+}
+#endif
+
+#if DEBUG_LOG_MOTOR == 1
+void debugLogMotorSpeed()
+{
+    Serial.print(pulse_length_esc1);
+    Serial.print(";");
+    Serial.print(pulse_length_esc2);
+    Serial.print(";");
+    Serial.print(pulse_length_esc3);
+    Serial.print(";");
+    Serial.print(pulse_length_esc4);
+
+    Serial.print(" | ");
+}
+#endif
+
+#if DEBUG_LOG_SET_POINT == 1
+void debugSetPoint()
+{
+    Serial.print(pid_set_points[ROLL]);
+    Serial.print(";");
+    Serial.print(pid_set_points[PITCH]);
+    Serial.print(";");
+    Serial.print(pid_set_points[YAW]);
+
+    Serial.print(" | ");
+}
+#endif
+
+#if DEBUG_LOG_MEASURE == 1
+void debugMeasure()
+{
+    Serial.print(measures[ROLL]);
+    Serial.print(";");
+    Serial.print(measures[PITCH]);
+
+    Serial.print(" | ");
+}
+#endif
