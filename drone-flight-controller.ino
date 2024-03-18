@@ -11,6 +11,10 @@
 #define DEBUG_LOG_SET_POINT 0
 #define DEBUG_LOG_MEASURE 0
 
+#define FEATURE_BATTERY_COMPENSATE 0
+
+#define BATTERY_LEVEL_READ_PIN 0
+
 #define CHANNEL1 0
 #define CHANNEL2 1
 #define CHANNEL3 2
@@ -145,7 +149,10 @@ int battery_voltage;
  */
 void setup()
 {
+    // Initialize serial only if debug is enabled
+#if DEBUG_LOG_RADIO == 1 || DEBUG_LOG_MOTOR == 1 || DEBUG_LOG_SET_POINT == 1 || DEBUG_LOG_MEASURE == 1
     Serial.begin(57600);
+#endif
 
     // Start I2C communication
     Wire.begin();
@@ -702,6 +709,7 @@ bool isInPosition(int position, int channel)
  */
 void compensateBatteryDrop()
 {
+#if FEATURE_BATTERY_COMPENSATE == 1
     if (isBatteryConnected())
     {
         pulse_length_esc1 += pulse_length_esc1 * ((1240 - battery_voltage) / (float)3500);
@@ -709,8 +717,10 @@ void compensateBatteryDrop()
         pulse_length_esc3 += pulse_length_esc3 * ((1240 - battery_voltage) / (float)3500);
         pulse_length_esc4 += pulse_length_esc4 * ((1240 - battery_voltage) / (float)3500);
     }
+#endif
 }
 
+#if FEATURE_BATTERY_COMPENSATE == 1
 /**
  * Read battery voltage & return whether the battery seems connected
  *
@@ -719,10 +729,11 @@ void compensateBatteryDrop()
 bool isBatteryConnected()
 {
     // Reduce noise with a low-pass filter (10Hz cutoff frequency)
-    battery_voltage = battery_voltage * 0.92 + (analogRead(0) + 65) * 0.09853;
+    battery_voltage = battery_voltage * 0.92 + (analogRead(BATTERY_LEVEL_READ_PIN) + 65) * 0.09853;
 
     return battery_voltage < 1240 && battery_voltage > 800;
 }
+#endif
 
 /**
  * Feel extra_channel_pulse_length variable from channel PIN_EXTRA_CHANNEL.
