@@ -4,15 +4,17 @@
  */
 
 // ---------------------------------------------------------------------------
+#include <EEPROM.h>
 #include <Wire.h>
 // ------------------- Define some constants for convenience -----------------
 #define DEBUG_LOG_RADIO 1
-#define DEBUG_LOG_MOTOR 0
-#define DEBUG_LOG_SET_POINT 0
-#define DEBUG_LOG_MEASURE 0
+#define DEBUG_LOG_MOTOR 1
+#define DEBUG_LOG_SET_POINT 1
+#define DEBUG_LOG_MEASURE 1
+
+#define PID_CALIBRATION 0
 
 #define FEATURE_BATTERY_COMPENSATE 0
-
 #define BATTERY_LEVEL_READ_PIN 0
 
 #define CHANNEL1 0
@@ -35,12 +37,12 @@
 #define NEUTRAL_MAX_THRESHOLD 2
 #define MAX_THRESHOLD 3
 
-#define X 0              // X axis
-#define Y 1              // Y axis
-#define Z 2              // Z axis
-#define MPU_ADDRESS 0x68 // I2C address of the MPU-6050
-#define FREQ 250         // Sampling frequency
-#define SSF_GYRO 65.5    // Sensitivity Scale Factor of the gyro from datasheet
+#define X 0               // X axis
+#define Y 1               // Y axis
+#define Z 2               // Z axis
+#define MPU_ADDRESS 0x68  // I2C address of the MPU-6050
+#define FREQ 250          // Sampling frequency
+#define SSF_GYRO 65.5     // Sensitivity Scale Factor of the gyro from datasheet
 
 #define STOPPED 0
 #define STARTING 1
@@ -52,44 +54,44 @@ volatile byte previous_state[4];
 // Threshold of min, neutral min and neutral max, max durations of the pulse on each channel of the receiver in µs ([min, neutralMin, neutralMax, max])
 // For throttle channel, put 0,0 to neutral
 unsigned int channelsPulseThreshold[4][4] = {
-    {1068, 1464, 1488, 1880}, // Channel 1
-    {1068, 0, 0, 1840},       // Channel 2
-    {1068, 1464, 1488, 1880}, // Channel 3
-    {1068, 1464, 1488, 1880}, // Channel 4
+  { 1068, 1464, 1488, 1880 },  // Channel 1
+  { 1068, 0, 0, 1840 },        // Channel 2
+  { 1068, 1464, 1488, 1880 },  // Channel 3
+  { 1068, 1464, 1488, 1880 },  // Channel 4
 };
 
 // Duration of the pulse on each channel of the receiver in µs (must be within 1000µs & 2000µs)
-volatile unsigned int pulse_length[4] = {1500, 1500, 1000, 1500};
+volatile unsigned int pulse_length[4] = { 1470, 1000, 1470, 1470 };
 // Duration of the pulse on extra channel (switch or other)
 unsigned int extra_channel_pulse_length = 0;
 
 // Used to calculate pulse duration on each channel
 volatile unsigned long current_time;
-volatile unsigned long timer[4]; // Timer of each channel
+volatile unsigned long timer[4];  // Timer of each channel
 
 // Used to configure which control (yaw, pitch, roll, throttle) is on which channel
 int mode_mapping[4];
 // ----------------------- MPU variables -------------------------------------
 // The RAW values got from gyro (in °/sec) in that order: X, Y, Z
-int gyro_raw[3] = {0, 0, 0};
+int gyro_raw[3] = { 0, 0, 0 };
 
 // Average gyro offsets of each axis in that order: X, Y, Z
-long gyro_offset[3] = {0, 0, 0};
+long gyro_offset[3] = { 0, 0, 0 };
 
 // Calculated angles from gyro's values in that order: X, Y, Z
-float gyro_angle[3] = {0, 0, 0};
+float gyro_angle[3] = { 0, 0, 0 };
 
 // The RAW values got from accelerometer (in m/sec²) in that order: X, Y, Z
-int acc_raw[3] = {0, 0, 0};
+int acc_raw[3] = { 0, 0, 0 };
 
 // Calculated angles from accelerometer's values in that order: X, Y, Z
-float acc_angle[3] = {0, 0, 0};
+float acc_angle[3] = { 0, 0, 0 };
 
 // Total 3D acceleration vector in m/s²
 long acc_total_vector;
 
 // Calculated angular motion on each axis: Yaw, Pitch, Roll
-float angular_motions[3] = {0, 0, 0};
+float angular_motions[3] = { 0, 0, 0 };
 
 /**
  * Real measures on 3 axis calculated from gyro AND accelerometer in that order : Yaw, Pitch, Roll
@@ -97,7 +99,7 @@ float angular_motions[3] = {0, 0, 0};
  *  - Nose up implies a positive pitch
  *  - Nose right implies a positive yaw
  */
-float measures[3] = {0, 0, 0};
+float measures[3] = { 0, 0, 0 };
 
 // MPU's temperature
 int temperature;
@@ -105,7 +107,7 @@ int temperature;
 // Init flag set to TRUE after first loop
 boolean initialized;
 // ----------------------- Variables for servo signal generation -------------
-unsigned int period; // Sampling period
+unsigned int period;  // Sampling period
 unsigned long loop_timer;
 unsigned long now, difference;
 
@@ -119,17 +121,17 @@ unsigned long pulse_length_esc1 = 1000,
 // Min throttle pulse offset to set yaw
 int YAW_MIN_THROTTLE_OFFSET = 38;
 
-float pid_set_points[3] = {0, 0, 0}; // Yaw, Pitch, Roll
+float pid_set_points[3] = { 0, 0, 0 };  // Yaw, Pitch, Roll
 
 // Errors
-float errors[3];                     // Measured errors (compared to instructions) : [Yaw, Pitch, Roll]
-float delta_err[3] = {0, 0, 0};      // Error deltas in that order   : Yaw, Pitch, Roll
-float error_sum[3] = {0, 0, 0};      // Error sums (used for integral component) : [Yaw, Pitch, Roll]
-float previous_error[3] = {0, 0, 0}; // Last errors (used for derivative component) : [Yaw, Pitch, Roll]
+float errors[3];                        // Measured errors (compared to instructions) : [Yaw, Pitch, Roll]
+float delta_err[3] = { 0, 0, 0 };       // Error deltas in that order   : Yaw, Pitch, Roll
+float error_sum[3] = { 0, 0, 0 };       // Error sums (used for integral component) : [Yaw, Pitch, Roll]
+float previous_error[3] = { 0, 0, 0 };  // Last errors (used for derivative component) : [Yaw, Pitch, Roll]
 // PID coefficients
-float Kp[3] = {4.0, 1.3, 1.3};    // P coefficients in that order : Yaw, Pitch, Roll
-float Ki[3] = {0.02, 0.04, 0.04}; // I coefficients in that order : Yaw, Pitch, Roll
-float Kd[3] = {0, 18, 18};        // D coefficients in that order : Yaw, Pitch, Roll
+float Kp[3] = { 4.0, 1.3, 1.3 };     // P coefficients in that order : Yaw, Pitch, Roll
+float Ki[3] = { 0.02, 0.04, 0.04 };  // I coefficients in that order : Yaw, Pitch, Roll
+float Kd[3] = { 0, 18, 18 };         // D coefficients in that order : Yaw, Pitch, Roll
 // ---------------------------------------------------------------------------
 /**
  * Status of the quadcopter:
@@ -147,81 +149,86 @@ int battery_voltage;
 /**
  * Setup configuration
  */
-void setup()
-{
-    // Initialize serial only if debug is enabled
-#if DEBUG_LOG_RADIO == 1 || DEBUG_LOG_MOTOR == 1 || DEBUG_LOG_SET_POINT == 1 || DEBUG_LOG_MEASURE == 1
-    Serial.begin(57600);
+void setup() {
+  // Initialize serial only if debug is enabled
+#if DEBUG_LOG_RADIO == 1 || DEBUG_LOG_MOTOR == 1 || DEBUG_LOG_SET_POINT == 1 || DEBUG_LOG_MEASURE == 1 || PID_CALIBRATION == 1
+  Serial.begin(57600);
 #endif
 
-    // Start I2C communication
-    Wire.begin();
-    TWBR = 12; // Set the I2C clock speed to 400kHz.
+  // Start I2C communication
+  Wire.begin();
+  TWBR = 12;  // Set the I2C clock speed to 400kHz.
 
-    // Turn LED on during setup
-    pinMode(13, OUTPUT);
-    digitalWrite(13, HIGH);
+  // Turn LED on during setup
+  pinMode(13, OUTPUT);
+  digitalWrite(13, HIGH);
 
-    // Set pins #4 #5 #6 #7 as outputs
-    DDRD |= B11110000;
+  // Set pins #4 #5 #6 #7 as outputs
+  DDRD |= B11110000;
 
-    setupMpu6050Registers();
+  setupMpu6050Registers();
 
-    calibrateMpu6050();
+  calibrateMpu6050();
 
-    configureChannelMapping();
-    // Configure channel switch
-    pinMode(PIN_EXTRA_CHANNEL, INPUT);
+  configureChannelMapping();
+  // Configure channel switch
+  pinMode(PIN_EXTRA_CHANNEL, INPUT);
 
-    // Configure interrupts for receiver
-    PCICR |= (1 << PCIE0);   // Set PCIE0 to enable PCMSK0 scan
-    PCMSK0 |= (1 << PCINT0); // Set PCINT0 (digital input 8) to trigger an interrupt on state change
-    PCMSK0 |= (1 << PCINT1); // Set PCINT1 (digital input 9) to trigger an interrupt on state change
-    PCMSK0 |= (1 << PCINT2); // Set PCINT2 (digital input 10)to trigger an interrupt on state change
-    PCMSK0 |= (1 << PCINT3); // Set PCINT3 (digital input 11)to trigger an interrupt on state change
+  // Configure interrupts for receiver
+  PCICR |= (1 << PCIE0);    // Set PCIE0 to enable PCMSK0 scan
+  PCMSK0 |= (1 << PCINT0);  // Set PCINT0 (digital input 8) to trigger an interrupt on state change
+  PCMSK0 |= (1 << PCINT1);  // Set PCINT1 (digital input 9) to trigger an interrupt on state change
+  PCMSK0 |= (1 << PCINT2);  // Set PCINT2 (digital input 10)to trigger an interrupt on state change
+  PCMSK0 |= (1 << PCINT3);  // Set PCINT3 (digital input 11)to trigger an interrupt on state change
 
-    period = (1000000 / FREQ); // Sampling period in µs
+  period = (1000000 / FREQ);  // Sampling period in µs
 
-    // Initialize loop_timer
-    loop_timer = micros();
+  // Initialize loop_timer
+  loop_timer = micros();
 
-    // Turn LED off now setup is done
-    digitalWrite(13, LOW);
+#if PID_CALIBRATION == 1
+  printSavedValues();
+#endif
+
+  // Turn LED off now setup is done
+  digitalWrite(13, LOW);
 }
 
 /**
  * Main program loop
  */
-void loop()
-{
-    // Optional. Read extra channel,
-    readExtraChannel();
+void loop() {
+  // Optional. Read extra channel,
+  //readExtraChannel();
 
-    // 1. First, read raw values from MPU-6050
-    readSensor();
+#if PID_CALIBRATION == 1
+  calibratePID();
+#endif
 
-    // 2. Calculate angles from gyro & accelerometer's values
-    calculateAngles();
+  // 1. First, read raw values from MPU-6050
+  readSensor();
 
-    // 3. Calculate set points of PID controller
-    calculateSetPoints();
+  // 2. Calculate angles from gyro & accelerometer's values
+  calculateAngles();
 
-    // 4. Calculate errors comparing angular motions to set points
-    calculateErrors();
+  // 3. Calculate set points of PID controller
+  calculateSetPoints();
 
-    if (isStarted())
-    {
-        // 5. Calculate motors speed with PID controller
-        pidController();
+  // 4. Calculate errors comparing angular motions to set points
+  calculateErrors();
 
-        compensateBatteryDrop();
-    }
+  if (isStarted()) {
+    // 5. Calculate motors speed with PID controller
+    pidController();
 
-    // 6. Apply motors speed
-    applyMotorSpeed();
+    compensateBatteryDrop();
+  }
 
-    // Optional, show logs if activated
-    debugLogs();
+  // 6. Apply motors speed
+  applyMotorSpeed();
+
+  // Optional, show logs if activated
+  debugLogs();
 }
 
 /**
@@ -232,128 +239,117 @@ void loop()
  *
  * @see https:// www.arduino.cc/en/Reference/PortManipulation
  */
-void applyMotorSpeed()
-{
-    // Refresh rate is 250Hz: send ESC pulses every 4000µs
-    while ((now = micros()) - loop_timer < period)
-        ;
+void applyMotorSpeed() {
+  // Refresh rate is 250Hz: send ESC pulses every 4000µs
+  while ((now = micros()) - loop_timer < period)
+    ;
 
-    // Update loop timer
-    loop_timer = now;
+  // Update loop timer
+  loop_timer = now;
 
-    // Set pins #4 #5 #6 #7 HIGH
-    PORTD |= B11110000;
+  // Set pins #4 #5 #6 #7 HIGH
+  PORTD |= B11110000;
 
-    // Wait until all pins #4 #5 #6 #7 are LOW
-    while (PORTD >= 16)
-    {
-        now = micros();
-        difference = now - loop_timer;
+  // Wait until all pins #4 #5 #6 #7 are LOW
+  while (PORTD >= 16) {
+    now = micros();
+    difference = now - loop_timer;
 
-        if (difference >= pulse_length_esc1)
-            PORTD &= B11101111; // Set pin #4 LOW
-        if (difference >= pulse_length_esc2)
-            PORTD &= B11011111; // Set pin #5 LOW
-        if (difference >= pulse_length_esc3)
-            PORTD &= B10111111; // Set pin #6 LOW
-        if (difference >= pulse_length_esc4)
-            PORTD &= B01111111; // Set pin #7 LOW
-    }
+    if (difference >= pulse_length_esc1)
+      PORTD &= B11101111;  // Set pin #4 LOW
+    if (difference >= pulse_length_esc2)
+      PORTD &= B11011111;  // Set pin #5 LOW
+    if (difference >= pulse_length_esc3)
+      PORTD &= B10111111;  // Set pin #6 LOW
+    if (difference >= pulse_length_esc4)
+      PORTD &= B01111111;  // Set pin #7 LOW
+  }
 }
 
 /**
  * Request raw values from MPU6050.
  */
-void readSensor()
-{
-    Wire.beginTransmission(MPU_ADDRESS); // Start communicating with the MPU-6050
-    Wire.write(0x3B);                    // Send the requested starting register
-    Wire.endTransmission();              // End the transmission
-    Wire.requestFrom(MPU_ADDRESS, 14);   // Request 14 bytes from the MPU-6050
+void readSensor() {
+  Wire.beginTransmission(MPU_ADDRESS);  // Start communicating with the MPU-6050
+  Wire.write(0x3B);                     // Send the requested starting register
+  Wire.endTransmission();               // End the transmission
+  Wire.requestFrom(MPU_ADDRESS, 14);    // Request 14 bytes from the MPU-6050
 
-    // Wait until all the bytes are received
-    while (Wire.available() < 14)
-        ;
+  // Wait until all the bytes are received
+  while (Wire.available() < 14)
+    ;
 
-    acc_raw[X] = Wire.read() << 8 | Wire.read();  // Add the low and high byte to the acc_raw[X] variable
-    acc_raw[Y] = Wire.read() << 8 | Wire.read();  // Add the low and high byte to the acc_raw[Y] variable
-    acc_raw[Z] = Wire.read() << 8 | Wire.read();  // Add the low and high byte to the acc_raw[Z] variable
-    temperature = Wire.read() << 8 | Wire.read(); // Add the low and high byte to the temperature variable
-    gyro_raw[X] = Wire.read() << 8 | Wire.read(); // Add the low and high byte to the gyro_raw[X] variable
-    gyro_raw[Y] = Wire.read() << 8 | Wire.read(); // Add the low and high byte to the gyro_raw[Y] variable
-    gyro_raw[Z] = Wire.read() << 8 | Wire.read(); // Add the low and high byte to the gyro_raw[Z] variable
+  acc_raw[X] = Wire.read() << 8 | Wire.read();   // Add the low and high byte to the acc_raw[X] variable
+  acc_raw[Y] = Wire.read() << 8 | Wire.read();   // Add the low and high byte to the acc_raw[Y] variable
+  acc_raw[Z] = Wire.read() << 8 | Wire.read();   // Add the low and high byte to the acc_raw[Z] variable
+  temperature = Wire.read() << 8 | Wire.read();  // Add the low and high byte to the temperature variable
+  gyro_raw[X] = Wire.read() << 8 | Wire.read();  // Add the low and high byte to the gyro_raw[X] variable
+  gyro_raw[Y] = Wire.read() << 8 | Wire.read();  // Add the low and high byte to the gyro_raw[Y] variable
+  gyro_raw[Z] = Wire.read() << 8 | Wire.read();  // Add the low and high byte to the gyro_raw[Z] variable
 }
 
 /**
  * Calculate real angles from gyro and accelerometer's values
  */
-void calculateAngles()
-{
-    calculateGyroAngles();
-    calculateAccelerometerAngles();
+void calculateAngles() {
+  calculateGyroAngles();
+  calculateAccelerometerAngles();
 
-    if (initialized)
-    {
-        // Correct the drift of the gyro with the accelerometer
-        gyro_angle[X] = gyro_angle[X] * 0.9996 + acc_angle[X] * 0.0004;
-        gyro_angle[Y] = gyro_angle[Y] * 0.9996 + acc_angle[Y] * 0.0004;
-    }
-    else
-    {
-        // At very first start, init gyro angles with accelerometer angles
-        resetGyroAngles();
+  if (initialized) {
+    // Correct the drift of the gyro with the accelerometer
+    gyro_angle[X] = gyro_angle[X] * 0.9996 + acc_angle[X] * 0.0004;
+    gyro_angle[Y] = gyro_angle[Y] * 0.9996 + acc_angle[Y] * 0.0004;
+  } else {
+    // At very first start, init gyro angles with accelerometer angles
+    resetGyroAngles();
 
-        initialized = true;
-    }
+    initialized = true;
+  }
 
-    // To dampen the pitch and roll angles a complementary filter is used
-    measures[ROLL] = measures[ROLL] * 0.9 + gyro_angle[X] * 0.1;
-    measures[PITCH] = measures[PITCH] * 0.9 + gyro_angle[Y] * 0.1;
-    measures[YAW] = -gyro_raw[Z] / SSF_GYRO; // Store the angular motion for this axis
+  // To dampen the pitch and roll angles a complementary filter is used
+  measures[ROLL] = measures[ROLL] * 0.9 + gyro_angle[X] * 0.1;
+  measures[PITCH] = measures[PITCH] * 0.9 + gyro_angle[Y] * 0.1;
+  measures[YAW] = -gyro_raw[Z] / SSF_GYRO;  // Store the angular motion for this axis
 
-    // Apply low-pass filter (10Hz cutoff frequency)
-    angular_motions[ROLL] = 0.7 * angular_motions[ROLL] + 0.3 * gyro_raw[X] / SSF_GYRO;
-    angular_motions[PITCH] = 0.7 * angular_motions[PITCH] + 0.3 * gyro_raw[Y] / SSF_GYRO;
-    angular_motions[YAW] = 0.7 * angular_motions[YAW] + 0.3 * gyro_raw[Z] / SSF_GYRO;
+  // Apply low-pass filter (10Hz cutoff frequency)
+  angular_motions[ROLL] = 0.7 * angular_motions[ROLL] + 0.3 * gyro_raw[X] / SSF_GYRO;
+  angular_motions[PITCH] = 0.7 * angular_motions[PITCH] + 0.3 * gyro_raw[Y] / SSF_GYRO;
+  angular_motions[YAW] = 0.7 * angular_motions[YAW] + 0.3 * gyro_raw[Z] / SSF_GYRO;
 }
 
 /**
  * Calculate pitch & roll angles using only the gyro.
  */
-void calculateGyroAngles()
-{
-    // Subtract offsets
-    gyro_raw[X] -= gyro_offset[X];
-    gyro_raw[Y] -= gyro_offset[Y];
-    gyro_raw[Z] -= gyro_offset[Z];
+void calculateGyroAngles() {
+  // Subtract offsets
+  gyro_raw[X] -= gyro_offset[X];
+  gyro_raw[Y] -= gyro_offset[Y];
+  gyro_raw[Z] -= gyro_offset[Z];
 
-    // Angle calculation using integration
-    gyro_angle[X] += (gyro_raw[X] / (FREQ * SSF_GYRO));
-    gyro_angle[Y] += (-gyro_raw[Y] / (FREQ * SSF_GYRO)); // Change sign to match the accelerometer's one
+  // Angle calculation using integration
+  gyro_angle[X] += (gyro_raw[X] / (FREQ * SSF_GYRO));
+  gyro_angle[Y] += (-gyro_raw[Y] / (FREQ * SSF_GYRO));  // Change sign to match the accelerometer's one
 
-    // Transfer roll to pitch if IMU has yawed
-    gyro_angle[Y] += gyro_angle[X] * sin(gyro_raw[Z] * (PI / (FREQ * SSF_GYRO * 180)));
-    gyro_angle[X] -= gyro_angle[Y] * sin(gyro_raw[Z] * (PI / (FREQ * SSF_GYRO * 180)));
+  // Transfer roll to pitch if IMU has yawed
+  gyro_angle[Y] += gyro_angle[X] * sin(gyro_raw[Z] * (PI / (FREQ * SSF_GYRO * 180)));
+  gyro_angle[X] -= gyro_angle[Y] * sin(gyro_raw[Z] * (PI / (FREQ * SSF_GYRO * 180)));
 }
 
 /**
  * Calculate pitch & roll angles using only the accelerometer.
  */
-void calculateAccelerometerAngles()
-{
-    // Calculate total 3D acceleration vector : √(X² + Y² + Z²)
-    acc_total_vector = sqrt(pow(acc_raw[X], 2) + pow(acc_raw[Y], 2) + pow(acc_raw[Z], 2));
+void calculateAccelerometerAngles() {
+  // Calculate total 3D acceleration vector : √(X² + Y² + Z²)
+  acc_total_vector = sqrt(pow(acc_raw[X], 2) + pow(acc_raw[Y], 2) + pow(acc_raw[Z], 2));
 
-    // To prevent asin to produce a NaN, make sure the input value is within [-1;+1]
-    if (abs(acc_raw[X]) < acc_total_vector)
-    {
-        acc_angle[X] = asin((float)acc_raw[Y] / acc_total_vector) * (180 / PI); // asin gives angle in radian. Convert to degree multiplying by 180/pi
-    }
+  // To prevent asin to produce a NaN, make sure the input value is within [-1;+1]
+  if (abs(acc_raw[X]) < acc_total_vector) {
+    acc_angle[X] = asin((float)acc_raw[Y] / acc_total_vector) * (180 / PI);  // asin gives angle in radian. Convert to degree multiplying by 180/pi
+  }
 
-    if (abs(acc_raw[Y]) < acc_total_vector)
-    {
-        acc_angle[Y] = asin((float)acc_raw[X] / acc_total_vector) * (180 / PI);
-    }
+  if (abs(acc_raw[Y]) < acc_total_vector) {
+    acc_angle[Y] = asin((float)acc_raw[X] / acc_total_vector) * (180 / PI);
+  }
 }
 
 /**
@@ -371,87 +367,83 @@ void calculateAccelerometerAngles()
  *
  * Each motor output is considered as a servomotor. As a result, value range is about 1000µs to 2000µs
  */
-void pidController()
-{
-    float yaw_pid = 0;
-    float pitch_pid = 0;
-    float roll_pid = 0;
-    int throttle = pulse_length[mode_mapping[THROTTLE]];
+void pidController() {
+  float yaw_pid = 0;
+  float pitch_pid = 0;
+  float roll_pid = 0;
+  int throttle = pulse_length[mode_mapping[THROTTLE]];
 
-    // Initialize motor commands with throttle
-    pulse_length_esc1 = throttle;
-    pulse_length_esc2 = throttle;
-    pulse_length_esc3 = throttle;
-    pulse_length_esc4 = throttle;
+  // Initialize motor commands with throttle
+  pulse_length_esc1 = throttle;
+  pulse_length_esc2 = throttle;
+  pulse_length_esc3 = throttle;
+  pulse_length_esc4 = throttle;
 
-    // Do not calculate anything if throttle is 0
-    if (false && !isInPosition(MIN_POSITION, mode_mapping[THROTTLE]))
-    {
-        // PID = e.Kp + ∫e.Ki + Δe.Kd
-        yaw_pid = (errors[YAW] * Kp[YAW]) + (error_sum[YAW] * Ki[YAW]) + (delta_err[YAW] * Kd[YAW]);
-        pitch_pid = (errors[PITCH] * Kp[PITCH]) + (error_sum[PITCH] * Ki[PITCH]) + (delta_err[PITCH] * Kd[PITCH]);
-        roll_pid = (errors[ROLL] * Kp[ROLL]) + (error_sum[ROLL] * Ki[ROLL]) + (delta_err[ROLL] * Kd[ROLL]);
+  // Do not calculate anything if throttle is 0
+  if (!isInPosition(MIN_POSITION, mode_mapping[THROTTLE])) {
+    // PID = e.Kp + ∫e.Ki + Δe.Kd
+    yaw_pid = (errors[YAW] * Kp[YAW]) + (error_sum[YAW] * Ki[YAW]) + (delta_err[YAW] * Kd[YAW]);
+    pitch_pid = (errors[PITCH] * Kp[PITCH]) + (error_sum[PITCH] * Ki[PITCH]) + (delta_err[PITCH] * Kd[PITCH]);
+    roll_pid = (errors[ROLL] * Kp[ROLL]) + (error_sum[ROLL] * Ki[ROLL]) + (delta_err[ROLL] * Kd[ROLL]);
 
-        // Keep values within acceptable range. TODO export hard-coded values in variables/const
-        yaw_pid = minMax(yaw_pid, -400, 400);
-        pitch_pid = minMax(pitch_pid, -400, 400);
-        roll_pid = minMax(roll_pid, -400, 400);
+    // Keep values within acceptable range. TODO export hard-coded values in variables/const
+    yaw_pid = minMax(yaw_pid, -400, 400);
+    pitch_pid = minMax(pitch_pid, -400, 400);
+    roll_pid = minMax(roll_pid, -400, 400);
 
-        // Calculate pulse duration for each ESC
-        pulse_length_esc1 = throttle - roll_pid - pitch_pid + yaw_pid;
-        pulse_length_esc2 = throttle + roll_pid - pitch_pid - yaw_pid;
-        pulse_length_esc3 = throttle - roll_pid + pitch_pid - yaw_pid;
-        pulse_length_esc4 = throttle + roll_pid + pitch_pid + yaw_pid;
-    }
+    // Calculate pulse duration for each ESC
+    pulse_length_esc1 = throttle - roll_pid - pitch_pid + yaw_pid;
+    pulse_length_esc2 = throttle + roll_pid - pitch_pid - yaw_pid;
+    pulse_length_esc3 = throttle - roll_pid + pitch_pid - yaw_pid;
+    pulse_length_esc4 = throttle + roll_pid + pitch_pid + yaw_pid;
+  }
 
-    // Prevent out-of-range-values
-    pulse_length_esc1 = minMax(pulse_length_esc1, 1100, 2000);
-    pulse_length_esc2 = minMax(pulse_length_esc2, 1100, 2000);
-    pulse_length_esc3 = minMax(pulse_length_esc3, 1100, 2000);
-    pulse_length_esc4 = minMax(pulse_length_esc4, 1100, 2000);
+  // Prevent out-of-range-values
+  pulse_length_esc1 = minMax(pulse_length_esc1, 1100, 2000);
+  pulse_length_esc2 = minMax(pulse_length_esc2, 1100, 2000);
+  pulse_length_esc3 = minMax(pulse_length_esc3, 1100, 2000);
+  pulse_length_esc4 = minMax(pulse_length_esc4, 1100, 2000);
 }
 
 /**
  * Calculate errors used by PID controller
  */
-void calculateErrors()
-{
-    // Calculate current errors
-    errors[YAW] = angular_motions[YAW] - pid_set_points[YAW];
-    errors[PITCH] = angular_motions[PITCH] - pid_set_points[PITCH];
-    errors[ROLL] = angular_motions[ROLL] - pid_set_points[ROLL];
+void calculateErrors() {
+  // Calculate current errors
+  errors[YAW] = 0;    // angular_motions[YAW] - pid_set_points[YAW];
+  errors[PITCH] = 0;  //angular_motions[PITCH] - pid_set_points[PITCH];
+  errors[ROLL] = angular_motions[ROLL] - pid_set_points[ROLL];
 
-    // Calculate sum of errors : Integral coefficients
-    error_sum[YAW] += errors[YAW];
-    error_sum[PITCH] += errors[PITCH];
-    error_sum[ROLL] += errors[ROLL];
+  // Calculate sum of errors : Integral coefficients
+  error_sum[YAW] += errors[YAW];
+  error_sum[PITCH] += errors[PITCH];
+  error_sum[ROLL] += errors[ROLL];
 
-    // Keep values in acceptable range
-    error_sum[YAW] = minMax(error_sum[YAW], -400 / Ki[YAW], 400 / Ki[YAW]);
-    error_sum[PITCH] = minMax(error_sum[PITCH], -400 / Ki[PITCH], 400 / Ki[PITCH]);
-    error_sum[ROLL] = minMax(error_sum[ROLL], -400 / Ki[ROLL], 400 / Ki[ROLL]);
+  // Keep values in acceptable range
+  error_sum[YAW] = minMax(error_sum[YAW], -400 / Ki[YAW], 400 / Ki[YAW]);
+  error_sum[PITCH] = minMax(error_sum[PITCH], -400 / Ki[PITCH], 400 / Ki[PITCH]);
+  error_sum[ROLL] = minMax(error_sum[ROLL], -400 / Ki[ROLL], 400 / Ki[ROLL]);
 
-    // Calculate error delta : Derivative coefficients
-    delta_err[YAW] = errors[YAW] - previous_error[YAW];
-    delta_err[PITCH] = errors[PITCH] - previous_error[PITCH];
-    delta_err[ROLL] = errors[ROLL] - previous_error[ROLL];
+  // Calculate error delta : Derivative coefficients
+  delta_err[YAW] = errors[YAW] - previous_error[YAW];
+  delta_err[PITCH] = errors[PITCH] - previous_error[PITCH];
+  delta_err[ROLL] = errors[ROLL] - previous_error[ROLL];
 
-    // Save current error as previous_error for next time
-    previous_error[YAW] = errors[YAW];
-    previous_error[PITCH] = errors[PITCH];
-    previous_error[ROLL] = errors[ROLL];
+  // Save current error as previous_error for next time
+  previous_error[YAW] = errors[YAW];
+  previous_error[PITCH] = errors[PITCH];
+  previous_error[ROLL] = errors[ROLL];
 }
 
 /**
  * Customize mapping of controls: set here which command is on which channel and call
  * this function in setup() routine.
  */
-void configureChannelMapping()
-{
-    mode_mapping[YAW] = CHANNEL4;
-    mode_mapping[PITCH] = CHANNEL3;
-    mode_mapping[ROLL] = CHANNEL1;
-    mode_mapping[THROTTLE] = CHANNEL2;
+void configureChannelMapping() {
+  mode_mapping[YAW] = CHANNEL4;
+  mode_mapping[PITCH] = CHANNEL3;
+  mode_mapping[ROLL] = CHANNEL1;
+  mode_mapping[THROTTLE] = CHANNEL2;
 }
 
 /**
@@ -461,31 +453,30 @@ void configureChannelMapping()
  *
  * @see https://www.invensense.com/wp-content/uploads/2015/02/MPU-6000-Register-Map1.pdf
  */
-void setupMpu6050Registers()
-{
-    // Configure power management
-    Wire.beginTransmission(MPU_ADDRESS); // Start communication with MPU
-    Wire.write(0x6B);                    // Request the PWR_MGMT_1 register
-    Wire.write(0x00);                    // Apply the desired configuration to the register
-    Wire.endTransmission();              // End the transmission
+void setupMpu6050Registers() {
+  // Configure power management
+  Wire.beginTransmission(MPU_ADDRESS);  // Start communication with MPU
+  Wire.write(0x6B);                     // Request the PWR_MGMT_1 register
+  Wire.write(0x00);                     // Apply the desired configuration to the register
+  Wire.endTransmission();               // End the transmission
 
-    // Configure the gyro's sensitivity
-    Wire.beginTransmission(MPU_ADDRESS); // Start communication with MPU
-    Wire.write(0x1B);                    // Request the GYRO_CONFIG register
-    Wire.write(0x08);                    // Apply the desired configuration to the register : ±500°/s
-    Wire.endTransmission();              // End the transmission
+  // Configure the gyro's sensitivity
+  Wire.beginTransmission(MPU_ADDRESS);  // Start communication with MPU
+  Wire.write(0x1B);                     // Request the GYRO_CONFIG register
+  Wire.write(0x08);                     // Apply the desired configuration to the register : ±500°/s
+  Wire.endTransmission();               // End the transmission
 
-    // Configure the acceleromter's sensitivity
-    Wire.beginTransmission(MPU_ADDRESS); // Start communication with MPU
-    Wire.write(0x1C);                    // Request the ACCEL_CONFIG register
-    Wire.write(0x10);                    // Apply the desired configuration to the register : ±8g
-    Wire.endTransmission();              // End the transmission
+  // Configure the acceleromter's sensitivity
+  Wire.beginTransmission(MPU_ADDRESS);  // Start communication with MPU
+  Wire.write(0x1C);                     // Request the ACCEL_CONFIG register
+  Wire.write(0x10);                     // Apply the desired configuration to the register : ±8g
+  Wire.endTransmission();               // End the transmission
 
-    // Configure low pass filter
-    Wire.beginTransmission(MPU_ADDRESS); // Start communication with MPU
-    Wire.write(0x1A);                    // Request the CONFIG register
-    Wire.write(0x03);                    // Set Digital Low Pass Filter about ~43Hz
-    Wire.endTransmission();              // End the transmission
+  // Configure low pass filter
+  Wire.beginTransmission(MPU_ADDRESS);  // Start communication with MPU
+  Wire.write(0x1A);                     // Request the CONFIG register
+  Wire.write(0x03);                     // Set Digital Low Pass Filter about ~43Hz
+  Wire.endTransmission();               // End the transmission
 }
 
 /**
@@ -496,31 +487,29 @@ void setupMpu6050Registers()
  *
  * This function might take ~2sec for 2000 samples.
  */
-void calibrateMpu6050()
-{
-    int max_samples = 2000;
+void calibrateMpu6050() {
+  int max_samples = 6000;
 
-    for (int i = 0; i < max_samples; i++)
-    {
-        readSensor();
+  for (int i = 0; i < max_samples; i++) {
+    readSensor();
 
-        gyro_offset[X] += gyro_raw[X];
-        gyro_offset[Y] += gyro_raw[Y];
-        gyro_offset[Z] += gyro_raw[Z];
+    gyro_offset[X] += gyro_raw[X];
+    gyro_offset[Y] += gyro_raw[Y];
+    gyro_offset[Z] += gyro_raw[Z];
 
-        // Generate low throttle pulse to init ESC and prevent them beeping
-        PORTD |= B11110000;      // Set pins #4 #5 #6 #7 HIGH
-        delayMicroseconds(1000); // Wait 1000µs
-        PORTD &= B00001111;      // Then set LOW
+    // Generate low throttle pulse to init ESC and prevent them beeping
+    PORTD |= B11110000;       // Set pins #4 #5 #6 #7 HIGH
+    delayMicroseconds(1000);  // Wait 1000µs
+    PORTD &= B00001111;       // Then set LOW
 
-        // Just wait a bit before next loop
-        delay(3);
-    }
+    // Just wait a bit before next loop
+    delay(3);
+  }
 
-    // Calculate average offsets
-    gyro_offset[X] /= max_samples;
-    gyro_offset[Y] /= max_samples;
-    gyro_offset[Z] /= max_samples;
+  // Calculate average offsets
+  gyro_offset[X] /= max_samples;
+  gyro_offset[Y] /= max_samples;
+  gyro_offset[Z] /= max_samples;
 }
 
 /**
@@ -532,18 +521,14 @@ void calibrateMpu6050()
  *
  * @return float
  */
-float minMax(float value, float min_value, float max_value)
-{
-    if (value > max_value)
-    {
-        value = max_value;
-    }
-    else if (value < min_value)
-    {
-        value = min_value;
-    }
+float minMax(float value, float min_value, float max_value) {
+  if (value > max_value) {
+    value = max_value;
+  } else if (value < min_value) {
+    value = min_value;
+  }
 
-    return value;
+  return value;
 }
 
 /**
@@ -553,82 +538,74 @@ float minMax(float value, float min_value, float max_value)
  *
  * @return bool
  */
-bool isStarted()
-{
-    // When left stick is moved in the bottom left corner
-    if (status == STOPPED && isInPosition(MIN_POSITION, mode_mapping[YAW]) && isInPosition(MIN_POSITION, mode_mapping[THROTTLE]))
-    {
-        status = STARTING;
-    }
+bool isStarted() {
+  // When left stick is moved in the bottom left corner
+  if (status == STOPPED) {  // && isInPosition(MIN_POSITION, mode_mapping[YAW]) && isInPosition(MIN_POSITION, mode_mapping[THROTTLE])) {
+    status = STARTING;
+  }
 
-    // When left stick is moved back in the center position
-    if (status == STARTING && isInPosition(NEUTRAL_POSITION, mode_mapping[YAW]) && isInPosition(MIN_POSITION, mode_mapping[THROTTLE]))
-    {
-        status = STARTED;
+  // When left stick is moved back in the center position
+  if (status == STARTING) {  // && isInPosition(NEUTRAL_POSITION, mode_mapping[YAW]) && isInPosition(MIN_POSITION, mode_mapping[THROTTLE])) {
+    status = STARTED;
 
-        // Reset PID controller's variables to prevent bump start
-        resetPidController();
+    // Reset PID controller's variables to prevent bump start
+    resetPidController();
 
-        resetGyroAngles();
-    }
+    resetGyroAngles();
+  }
 
-    // When left stick is moved in the bottom right corner
-    if (status == STARTED && isInPosition(MAX_POSITION, mode_mapping[YAW]) && isInPosition(MIN_POSITION, mode_mapping[THROTTLE]))
-    {
-        status = STOPPED;
-        // Make sure to always stop motors when status is STOPPED
-        stopAll();
-    }
+  // When left stick is moved in the bottom right corner
+  if (status == STARTED && isInPosition(MAX_POSITION, mode_mapping[YAW]) && isInPosition(MIN_POSITION, mode_mapping[THROTTLE])) {
+    status = STOPPED;
+    // Make sure to always stop motors when status is STOPPED
+    stopAll();
+  }
 
-    return status == STARTED;
+  return status == STARTED;
 }
 
 /**
  * Reset gyro's angles with accelerometer's angles.
  */
-void resetGyroAngles()
-{
-    gyro_angle[X] = acc_angle[X];
-    gyro_angle[Y] = acc_angle[Y];
+void resetGyroAngles() {
+  gyro_angle[X] = acc_angle[X];
+  gyro_angle[Y] = acc_angle[Y];
 }
 
 /**
  * Reset motors' pulse length to 1000µs to totally stop them.
  */
-void stopAll()
-{
-    pulse_length_esc1 = 1000;
-    pulse_length_esc2 = 1000;
-    pulse_length_esc3 = 1000;
-    pulse_length_esc4 = 1000;
+void stopAll() {
+  pulse_length_esc1 = 1000;
+  pulse_length_esc2 = 1000;
+  pulse_length_esc3 = 1000;
+  pulse_length_esc4 = 1000;
 }
 
 /**
  * Reset all PID controller's variables.
  */
-void resetPidController()
-{
-    errors[YAW] = 0;
-    errors[PITCH] = 0;
-    errors[ROLL] = 0;
+void resetPidController() {
+  errors[YAW] = 0;
+  errors[PITCH] = 0;
+  errors[ROLL] = 0;
 
-    error_sum[YAW] = 0;
-    error_sum[PITCH] = 0;
-    error_sum[ROLL] = 0;
+  error_sum[YAW] = 0;
+  error_sum[PITCH] = 0;
+  error_sum[ROLL] = 0;
 
-    previous_error[YAW] = 0;
-    previous_error[PITCH] = 0;
-    previous_error[ROLL] = 0;
+  previous_error[YAW] = 0;
+  previous_error[PITCH] = 0;
+  previous_error[ROLL] = 0;
 }
 
 /**
  * Calculate PID set points on axis YAW, PITCH, ROLL
  */
-void calculateSetPoints()
-{
-    pid_set_points[YAW] = calculateYawSetPoint(pulse_length[mode_mapping[YAW]], pulse_length[mode_mapping[THROTTLE]]);
-    pid_set_points[PITCH] = calculateSetPoint(measures[PITCH], pulse_length[mode_mapping[PITCH]], mode_mapping[PITCH]);
-    pid_set_points[ROLL] = calculateSetPoint(measures[ROLL], pulse_length[mode_mapping[ROLL]], mode_mapping[ROLL]);
+void calculateSetPoints() {
+  pid_set_points[YAW] = calculateYawSetPoint(pulse_length[mode_mapping[YAW]], pulse_length[mode_mapping[THROTTLE]]);
+  pid_set_points[PITCH] = calculateSetPoint(measures[PITCH], pulse_length[mode_mapping[PITCH]], mode_mapping[PITCH]);
+  pid_set_points[ROLL] = calculateSetPoint(measures[ROLL], pulse_length[mode_mapping[ROLL]], mode_mapping[ROLL]);
 }
 
 /**
@@ -638,25 +615,21 @@ void calculateSetPoints()
  * @param int   channel_pulse Pulse length of the corresponding receiver channel
  * @return float
  */
-float calculateSetPoint(float angle, int channel_pulse, int channel)
-{
-    float level_adjust = angle * 15; // Value 15 limits maximum angle value to ±32.8°
-    float set_point = 0;
+float calculateSetPoint(float angle, int channel_pulse, int channel) {
+  float level_adjust = angle * 15;  // Value 15 limits maximum angle value to ±32.8°
+  float set_point = 0;
 
-    // Need a dead band of 16µs for better result
-    if (channel_pulse > channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD])
-    {
-        set_point = channel_pulse - channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD];
-    }
-    else if (channel_pulse < channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD])
-    {
-        set_point = channel_pulse - channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD];
-    }
+  // Need a dead band of 16µs for better result
+  if (channel_pulse > 1488) {
+    set_point = channel_pulse - 1488;
+  } else if (channel_pulse < 1464) {
+    set_point = channel_pulse - 1464;
+  }
 
-    set_point -= level_adjust;
-    set_point /= 3;
+  set_point -= level_adjust;
+  set_point /= 3;
 
-    return set_point;
+  return set_point;
 }
 
 /**
@@ -666,57 +639,45 @@ float calculateSetPoint(float angle, int channel_pulse, int channel)
  * @param int throttle_pulse Receiver pulse length of throttle's channel
  * @return float
  */
-float calculateYawSetPoint(int yaw_pulse, int throttle_pulse)
-{
-    float set_point = 0;
+float calculateYawSetPoint(int yaw_pulse, int throttle_pulse) {
+  float set_point = 0;
 
-    // Do not yaw when turning off the motors
+  // Do not yaw when turning off the motors
 
-    if (throttle_pulse > channelsPulseThreshold[mode_mapping[THROTTLE]][MIN_THRESHOLD] + YAW_MIN_THROTTLE_OFFSET)
-    {
-        // There is no notion of angle on this axis as the quadcopter can turn on itself
-        set_point = calculateSetPoint(0, yaw_pulse, mode_mapping[YAW]);
-    }
+  if (throttle_pulse > channelsPulseThreshold[mode_mapping[THROTTLE]][MIN_THRESHOLD] + YAW_MIN_THROTTLE_OFFSET) {
+    // There is no notion of angle on this axis as the quadcopter can turn on itself
+    set_point = calculateSetPoint(0, yaw_pulse, mode_mapping[YAW]);
+  }
 
-    return set_point;
+  return set_point;
 }
 
 /**
  * Check if channel is in position max or min depend of channels thresholds
  */
-bool isInPosition(int position, int channel)
-{
-    if (position == MIN_POSITION)
-    {
-        return pulse_length[channel] <= channelsPulseThreshold[channel][MIN_THRESHOLD];
-    }
-    else if (position == MAX_POSITION)
-    {
-        return pulse_length[channel] >= channelsPulseThreshold[channel][MAX_THRESHOLD];
-    }
-    else if (position == NEUTRAL_POSITION &&
-             channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] != 0 &&
-             channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD] != 0)
-    {
-        return pulse_length[channel] >= channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] && pulse_length[channel] <= channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD];
-    }
+bool isInPosition(int position, int channel) {
+  if (position == MIN_POSITION) {
+    return pulse_length[channel] <= channelsPulseThreshold[channel][MIN_THRESHOLD];
+  } else if (position == MAX_POSITION) {
+    return pulse_length[channel] >= channelsPulseThreshold[channel][MAX_THRESHOLD];
+  } else if (position == NEUTRAL_POSITION && channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] != 0 && channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD] != 0) {
+    return pulse_length[channel] >= channelsPulseThreshold[channel][NEUTRAL_MIN_THRESHOLD] && pulse_length[channel] <= channelsPulseThreshold[channel][NEUTRAL_MAX_THRESHOLD];
+  }
 
-    return false;
+  return false;
 }
 
 /**
  * Compensate battery drop applying a coefficient on output values
  */
-void compensateBatteryDrop()
-{
+void compensateBatteryDrop() {
 #if FEATURE_BATTERY_COMPENSATE == 1
-    if (isBatteryConnected())
-    {
-        pulse_length_esc1 += pulse_length_esc1 * ((1240 - battery_voltage) / (float)3500);
-        pulse_length_esc2 += pulse_length_esc2 * ((1240 - battery_voltage) / (float)3500);
-        pulse_length_esc3 += pulse_length_esc3 * ((1240 - battery_voltage) / (float)3500);
-        pulse_length_esc4 += pulse_length_esc4 * ((1240 - battery_voltage) / (float)3500);
-    }
+  if (isBatteryConnected()) {
+    pulse_length_esc1 += pulse_length_esc1 * ((1240 - battery_voltage) / (float)3500);
+    pulse_length_esc2 += pulse_length_esc2 * ((1240 - battery_voltage) / (float)3500);
+    pulse_length_esc3 += pulse_length_esc3 * ((1240 - battery_voltage) / (float)3500);
+    pulse_length_esc4 += pulse_length_esc4 * ((1240 - battery_voltage) / (float)3500);
+  }
 #endif
 }
 
@@ -726,12 +687,11 @@ void compensateBatteryDrop()
  *
  * @return boolean
  */
-bool isBatteryConnected()
-{
-    // Reduce noise with a low-pass filter (10Hz cutoff frequency)
-    battery_voltage = battery_voltage * 0.92 + (analogRead(BATTERY_LEVEL_READ_PIN) + 65) * 0.09853;
+bool isBatteryConnected() {
+  // Reduce noise with a low-pass filter (10Hz cutoff frequency)
+  battery_voltage = battery_voltage * 0.92 + (analogRead(BATTERY_LEVEL_READ_PIN) + 65) * 0.09853;
 
-    return battery_voltage < 1240 && battery_voltage > 800;
+  return battery_voltage < 1240 && battery_voltage > 800;
 }
 #endif
 
@@ -739,37 +699,35 @@ bool isBatteryConnected()
  * Feel extra_channel_pulse_length variable from channel PIN_EXTRA_CHANNEL.
  * Not use interrupt to let available pin free for control channels
  */
-void readExtraChannel()
-{
-    extra_channel_pulse_length = read_pulse(PIN_EXTRA_CHANNEL);
+void readExtraChannel() {
+  extra_channel_pulse_length = read_pulse(PIN_EXTRA_CHANNEL);
 }
+
+
+unsigned long current_pulse_length = 0;  // default return value
+unsigned long rising_time;               // time of the rising edge
+int last_state;                          // previous pin state
 
 /*
  * Non-blocking pulseIn(): returns the pulse length in microseconds
  * when the falling edge is detected. Otherwise returns 0.
  */
-unsigned long read_pulse(int pin)
-{
-    static unsigned long rising_time; // time of the rising edge
-    static int last_state;            // previous pin state
-    int state = digitalRead(pin);     // current pin state
-    unsigned long pulse_length = 0;   // default return value
+unsigned long read_pulse(int pin) {
+  int state = digitalRead(pin);  // current pin state
 
-    // On rising edge: record current time.
-    if (last_state == LOW && state == HIGH)
-    {
-        rising_time = micros();
-    }
+  // On rising edge: record current time.
+  if (last_state == LOW && state == HIGH) {
+    rising_time = micros();
+  }
 
-    // On falling edge: report pulse length.
-    if (last_state == HIGH && state == LOW)
-    {
-        unsigned long falling_time = micros();
-        pulse_length = falling_time - rising_time;
-    }
+  // On falling edge: report pulse length.
+  if (last_state == HIGH && state == LOW) {
+    unsigned long falling_time = micros();
+    current_pulse_length = falling_time - rising_time;
+  }
 
-    last_state = state;
-    return pulse_length;
+  last_state = state;
+  return current_pulse_length;
 }
 
 /**
@@ -784,92 +742,227 @@ unsigned long read_pulse(int pin)
  * @see https://www.arduino.cc/en/Reference/PortManipulation
  * @see https://www.firediy.fr/article/utiliser-sa-radiocommande-avec-un-arduino-drone-ch-6
  */
-ISR(PCINT0_vect)
-{
-    current_time = micros();
+ISR(PCINT0_vect) {
+  current_time = micros();
 
-    // Channel 1 -------------------------------------------------
-    if (PINB & B00000001)
-    { // Is input 8 high ?
-        if (previous_state[CHANNEL1] == LOW)
-        {                                    // Input 8 changed from 0 to 1 (rising edge)
-            previous_state[CHANNEL1] = HIGH; // Save current state
-            timer[CHANNEL1] = current_time;  // Save current time
-        }
+  // Channel 1 -------------------------------------------------
+  if (PINB & B00000001) {                   // Is input 8 high ?
+    if (previous_state[CHANNEL1] == LOW) {  // Input 8 changed from 0 to 1 (rising edge)
+      previous_state[CHANNEL1] = HIGH;      // Save current state
+      timer[CHANNEL1] = current_time;       // Save current time
     }
-    else if (previous_state[CHANNEL1] == HIGH)
-    {                                                            // Input 8 changed from 1 to 0 (falling edge)
-        previous_state[CHANNEL1] = LOW;                          // Save current state
-        pulse_length[CHANNEL1] = current_time - timer[CHANNEL1]; // Calculate pulse duration & save it
-    }
+  } else if (previous_state[CHANNEL1] == HIGH) {  // Input 8 changed from 1 to 0 (falling edge)
+    previous_state[CHANNEL1] = LOW;               // Save current state
+    //pulse_length[CHANNEL1] = current_time - timer[CHANNEL1];  // Calculate pulse duration & save it
+  }
 
-    // Channel 2 -------------------------------------------------
-    if (PINB & B00000010)
-    { // Is input 9 high ?
-        if (previous_state[CHANNEL2] == LOW)
-        {                                    // Input 9 changed from 0 to 1 (rising edge)
-            previous_state[CHANNEL2] = HIGH; // Save current state
-            timer[CHANNEL2] = current_time;  // Save current time
-        }
+  // Channel 2 -------------------------------------------------
+  if (PINB & B00000010) {                   // Is input 9 high ?
+    if (previous_state[CHANNEL2] == LOW) {  // Input 9 changed from 0 to 1 (rising edge)
+      previous_state[CHANNEL2] = HIGH;      // Save current state
+      timer[CHANNEL2] = current_time;       // Save current time
     }
-    else if (previous_state[CHANNEL2] == HIGH)
-    {                                                            // Input 9 changed from 1 to 0 (falling edge)
-        previous_state[CHANNEL2] = LOW;                          // Save current state
-        pulse_length[CHANNEL2] = current_time - timer[CHANNEL2]; // Calculate pulse duration & save it
-    }
+  } else if (previous_state[CHANNEL2] == HIGH) {  // Input 9 changed from 1 to 0 (falling edge)
+    previous_state[CHANNEL2] = LOW;               // Save current state
+    //pulse_length[CHANNEL2] = current_time - timer[CHANNEL2];  // Calculate pulse duration & save it
+  }
 
-    // Channel 3 -------------------------------------------------
-    if (PINB & B00000100)
-    { // Is input 10 high ?
-        if (previous_state[CHANNEL3] == LOW)
-        {                                    // Input 10 changed from 0 to 1 (rising edge)
-            previous_state[CHANNEL3] = HIGH; // Save current state
-            timer[CHANNEL3] = current_time;  // Save current time
-        }
+  // Channel 3 -------------------------------------------------
+  if (PINB & B00000100) {                   // Is input 10 high ?
+    if (previous_state[CHANNEL3] == LOW) {  // Input 10 changed from 0 to 1 (rising edge)
+      previous_state[CHANNEL3] = HIGH;      // Save current state
+      timer[CHANNEL3] = current_time;       // Save current time
     }
-    else if (previous_state[CHANNEL3] == HIGH)
-    {                                                            // Input 10 changed from 1 to 0 (falling edge)
-        previous_state[CHANNEL3] = LOW;                          // Save current state
-        pulse_length[CHANNEL3] = current_time - timer[CHANNEL3]; // Calculate pulse duration & save it
-    }
+  } else if (previous_state[CHANNEL3] == HIGH) {  // Input 10 changed from 1 to 0 (falling edge)
+    previous_state[CHANNEL3] = LOW;               // Save current state
+    //pulse_length[CHANNEL3] = current_time - timer[CHANNEL3];  // Calculate pulse duration & save it
+  }
 
-    // Channel 4 -------------------------------------------------
-    if (PINB & B00001000)
-    { // Is input 11 high ?
-        if (previous_state[CHANNEL4] == LOW)
-        {                                    // Input 11 changed from 0 to 1 (rising edge)
-            previous_state[CHANNEL4] = HIGH; // Save current state
-            timer[CHANNEL4] = current_time;  // Save current time
-        }
+  // Channel 4 -------------------------------------------------
+  if (PINB & B00001000) {                   // Is input 11 high ?
+    if (previous_state[CHANNEL4] == LOW) {  // Input 11 changed from 0 to 1 (rising edge)
+      previous_state[CHANNEL4] = HIGH;      // Save current state
+      timer[CHANNEL4] = current_time;       // Save current time
     }
-    else if (previous_state[CHANNEL4] == HIGH)
-    {                                                            // Input 11 changed from 1 to 0 (falling edge)
-        previous_state[CHANNEL4] = LOW;                          // Save current state
-        pulse_length[CHANNEL4] = current_time - timer[CHANNEL4]; // Calculate pulse duration & save it
-    }
+  } else if (previous_state[CHANNEL4] == HIGH) {  // Input 11 changed from 1 to 0 (falling edge)
+    previous_state[CHANNEL4] = LOW;               // Save current state
+    //pulse_length[CHANNEL4] = current_time - timer[CHANNEL4];  // Calculate pulse duration & save it
+  }
 }
 
-void debugLogs()
-{
+///////////////////////////////////////////////////////
+//                  PID CALIBRATION
+///////////////////////////////////////////////////////
+#if PID_CALIBRATION == 1
+
+#define PID_D 0
+#define PID_P 1
+#define PID_I 2
+
+int currentCalibrationType = PID_D;
+
+const int address_var0 = 0;                  // Address to store variable 0
+const int address_var1 = sizeof(float);      // Address to store variable 1
+const int address_var2 = 2 * sizeof(float);  // Address to store variable 2
+
+// In format {min, max, multiplicator}
+unsigned int serialToPIDMapper[3][2] = {
+  { 0, 500 },  // D
+  { 0, 500 },  // P
+  { 0, 500 },  // I
+};
+
+float pidValues[3] = {
+  0.0,  // D
+  0.0,  // P
+  0.0,  // I
+};
+
+void calibratePID() {
+  setValue(currentCalibrationType, extra_channel_pulse_length);
+
+  if (isInPosition(MIN_POSITION, mode_mapping[PITCH])) {
+    moveNextValueType();
+  }
+}
+
+void setValue(int valueType, int intValueFromSerial) {
+  if (isInValueRange(valueType, intValueFromSerial)) {
+
+    int nextValue = map(intValueFromSerial, 1000, 2000, serialToPIDMapper[valueType][0], serialToPIDMapper[valueType][1]);
+
+    float finalValue = nextValue * 0.1;
+
+    pidValues[valueType] = finalValue;
+
+    applyPidValues();
+  }
+}
+
+void applyPidValues() {
+  Kd[1] = pidValues[0];
+  Kd[2] = pidValues[0];
+
+  Kp[1] = pidValues[1];
+  Kp[2] = pidValues[1];
+
+  Ki[1] = pidValues[2];
+  Ki[2] = pidValues[2];
+}
+
+void moveNextValueType() {
+  saveValue(currentCalibrationType, pidValues[currentCalibrationType]);
+
+  switch (currentCalibrationType) {
+    case PID_D:
+      currentCalibrationType = PID_P;
+      Serial.println("PID_P");
+      break;
+    case PID_P:
+      currentCalibrationType = PID_I;
+      Serial.println("PID_I");
+      break;
+    case PID_I:
+      currentCalibrationType = PID_D;
+      Serial.println("PID_D");
+      break;
+    // etc
+    default: break;
+  }
+}
+
+void saveValue(int variableIndex, float value) {
+  int address;
+
+  // Determine the address based on the variableIndex
+  switch (variableIndex) {
+    case PID_D:
+      address = address_var0;
+      break;
+    case PID_P:
+      address = address_var1;
+      break;
+    case PID_I:
+      address = address_var2;
+      break;
+    default:
+      return;
+  }
+
+  // Write the float value to EEPROM
+  EEPROM.put(address, value);
+}
+
+void printSavedValues() {
+  Serial.print("Saved Values > ");
+  float* savedValues = readSavedPIDValues();  // Read saved values from EEPROM
+
+  logPids(savedValues);
+}
+
+float* readSavedPIDValues() {
+  static float values[3];  // Array to hold the read values
+
+  // Read values from EEPROM
+  EEPROM.get(address_var0, values[0]);
+  EEPROM.get(address_var1, values[1]);
+  EEPROM.get(address_var2, values[2]);
+
+  // Check if values exist in EEPROM
+  // If not, initialize the array with 0
+  for (int i = 0; i < 3; i++) {
+    if (isnan(values[i])) {  // Check if the value is NaN (which means it wasn't written to EEPROM)
+      values[i] = 0.0;       // Initialize with 0
+    }
+  }
+
+  // Return the array of values
+  return values;
+}
+
+bool isInValueRange(int valueType, int intValueFromSerial) {
+  return intValueFromSerial >= 1000 && intValueFromSerial <= 2000;
+}
+
+void logPids(float _pidValues[]) {
+  Serial.print("D: ");
+  Serial.print(_pidValues[0]);
+  Serial.print(" | ");
+  Serial.print("P: ");
+  Serial.print(_pidValues[1]);
+  Serial.print(" | ");
+  Serial.print("I: ");
+  Serial.print(_pidValues[2]);
+  Serial.print(" | ");
+  Serial.println();
+}
+
+#endif
+
+///////////////////////////////////////////////////////
+//                        DEBUG
+///////////////////////////////////////////////////////
+
+void debugLogs() {
 
 #if DEBUG_LOG_RADIO == 1
-    debugLogRadioChannels();
+  debugLogRadioChannels();
 #endif
 
 #if DEBUG_LOG_MOTOR == 1
-    debugLogMotorSpeed();
+  debugLogMotorSpeed();
 #endif
 
 #if DEBUG_LOG_SET_POINT == 1
-    debugSetPoint();
+  debugSetPoint();
 #endif
 
 #if DEBUG_LOG_MEASURE == 1
-    debugMeasure();
+  debugMeasure();
 #endif
 
 #if DEBUG_LOG_RADIO == 1 || DEBUG_LOG_MOTOR == 1 || DEBUG_LOG_SET_POINT == 1 || DEBUG_LOG_MEASURE == 1
-    Serial.println();
+  Serial.println();
 #endif
 }
 
@@ -877,97 +970,85 @@ void debugLogs()
 /**
  * Show logs of control with order: ROLL, PITCH, THROTTLE, YAW, EXTRA CHANNEL
  */
-void debugLogRadioChannels()
-{
-    Serial.print(pulse_length[mode_mapping[ROLL]]);
-    Serial.print(" ");
-    debugLogPosition(mode_mapping[ROLL]);
+void debugLogRadioChannels() {
+  Serial.print(pulse_length[mode_mapping[ROLL]]);
+  Serial.print(" ");
+  debugLogPosition(mode_mapping[ROLL]);
 
-    Serial.print(";");
-    Serial.print(pulse_length[mode_mapping[PITCH]]);
-    Serial.print(" ");
-    debugLogPosition(mode_mapping[PITCH]);
+  Serial.print(";");
+  Serial.print(pulse_length[mode_mapping[PITCH]]);
+  Serial.print(" ");
+  debugLogPosition(mode_mapping[PITCH]);
 
-    Serial.print(";");
-    Serial.print(pulse_length[mode_mapping[THROTTLE]]);
-    Serial.print(" ");
-    debugLogPosition(mode_mapping[THROTTLE]);
+  Serial.print(";");
+  Serial.print(pulse_length[mode_mapping[THROTTLE]]);
+  Serial.print(" ");
+  debugLogPosition(mode_mapping[THROTTLE]);
 
-    Serial.print(";");
-    Serial.print(pulse_length[mode_mapping[YAW]]);
-    Serial.print(" ");
-    debugLogPosition(mode_mapping[YAW]);
+  Serial.print(";");
+  Serial.print(pulse_length[mode_mapping[YAW]]);
+  Serial.print(" ");
+  debugLogPosition(mode_mapping[YAW]);
 
-    int ch = pulseIn(PIN_EXTRA_CHANNEL, HIGH, 30000);
-    Serial.print(";");
-    Serial.print(ch);
-    Serial.print(" ");
+  // int ch = pulseIn(PIN_EXTRA_CHANNEL, HIGH, 30000);
+  // Serial.print(";");
+  // Serial.print(ch);
+  // Serial.print(" ");
 
-    Serial.print(" | ");
+  Serial.print(" | ");
 
-    Serial.print(";");
-    Serial.print(extra_channel_pulse_length);
-    Serial.print(" ");
+  Serial.print(";");
+  Serial.print(extra_channel_pulse_length);
+  Serial.print(" ");
 
-    Serial.print(" | ");
+  Serial.print(" | ");
 }
 
-void debugLogPosition(int channel)
-{
-    if (isInPosition(MIN_POSITION, channel))
-    {
-        Serial.print("I");
-    }
-    else if (isInPosition(MAX_POSITION, channel))
-    {
-        Serial.print("A");
-    }
-    else if (isInPosition(NEUTRAL_POSITION, channel))
-    {
-        Serial.print("N");
-    }
-    else
-    {
-        Serial.print("-");
-    }
+void debugLogPosition(int channel) {
+  if (isInPosition(MIN_POSITION, channel)) {
+    Serial.print("I");
+  } else if (isInPosition(MAX_POSITION, channel)) {
+    Serial.print("A");
+  } else if (isInPosition(NEUTRAL_POSITION, channel)) {
+    Serial.print("N");
+  } else {
+    Serial.print("-");
+  }
 }
 #endif
 
 #if DEBUG_LOG_MOTOR == 1
-void debugLogMotorSpeed()
-{
-    Serial.print(pulse_length_esc1);
-    Serial.print(";");
-    Serial.print(pulse_length_esc2);
-    Serial.print(";");
-    Serial.print(pulse_length_esc3);
-    Serial.print(";");
-    Serial.print(pulse_length_esc4);
+void debugLogMotorSpeed() {
+  Serial.print(pulse_length_esc1);
+  Serial.print(";");
+  Serial.print(pulse_length_esc2);
+  Serial.print(";");
+  Serial.print(pulse_length_esc3);
+  Serial.print(";");
+  Serial.print(pulse_length_esc4);
 
-    Serial.print(" | ");
+  Serial.print(" | ");
 }
 #endif
 
 #if DEBUG_LOG_SET_POINT == 1
-void debugSetPoint()
-{
-    Serial.print(pid_set_points[ROLL]);
-    Serial.print(";");
-    Serial.print(pid_set_points[PITCH]);
-    Serial.print(";");
-    Serial.print(pid_set_points[YAW]);
+void debugSetPoint() {
+  Serial.print(pid_set_points[ROLL]);
+  Serial.print(";");
+  Serial.print(pid_set_points[PITCH]);
+  Serial.print(";");
+  Serial.print(pid_set_points[YAW]);
 
-    Serial.print(" | ");
+  Serial.print(" | ");
 }
 #endif
 
 #if DEBUG_LOG_MEASURE == 1
-void debugMeasure()
-{
-    Serial.print(measures[ROLL]);
-    Serial.print(";");
-    Serial.print(measures[PITCH]);
+void debugMeasure() {
+  Serial.print(measures[ROLL]);
+  Serial.print(";");
+  Serial.print(measures[PITCH]);
 
-    Serial.print(" | ");
+  Serial.print(" | ");
 }
 #endif

@@ -15,10 +15,10 @@ const int address_var1 = sizeof(float);      // Address to store variable 1
 const int address_var2 = 2 * sizeof(float);  // Address to store variable 2
 
 // In format {min, max, multiplicator}
-unsigned int serialToPIDMapper[3][3] = {
-  { 0, 500, 0.1 },  // D
-  { 0, 500, 0.1 },  // P
-  { 0, 500, 0.1 },  // I
+unsigned int serialToPIDMapper[3][2] = {
+  { 0, 500 },  // D
+  { 0, 500 },  // P
+  { 0, 500 },  // I
 };
 
 float pidValues[3] = {
